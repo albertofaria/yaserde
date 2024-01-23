@@ -204,17 +204,18 @@ pub fn serialize(
       if field.is_text_content() {
         return match field.get_type() {
           Field::FieldBox { .. } => Some(quote!(
-            let s = Deref::deref(Box::as_ref(&self.#label));
-            let data_event = ::yaserde::__xml::writer::XmlEvent::characters(s);
+            let s = format!("{}", Box::as_ref(&self.#label));
+            let data_event = ::yaserde::__xml::writer::XmlEvent::characters(&s);
             writer.write(data_event).map_err(|e| e.to_string())?;
           )),
           Field::FieldOption { .. } => Some(quote!(
-            let s = self.#label.as_deref().unwrap_or_default();
-            let data_event = ::yaserde::__xml::writer::XmlEvent::characters(s);
+            let s = self.#label.as_ref().map(::std::string::ToString::to_string).unwrap_or_default();
+            let data_event = ::yaserde::__xml::writer::XmlEvent::characters(&s);
             writer.write(data_event).map_err(|e| e.to_string())?;
           )),
           _ => Some(quote!(
-            let data_event = ::yaserde::__xml::writer::XmlEvent::characters(&self.#label);
+            let s = format!("{}", &self.#label);
+            let data_event = ::yaserde::__xml::writer::XmlEvent::characters(&s);
             writer.write(data_event).map_err(|e| e.to_string())?;
           )),
         };

@@ -126,7 +126,7 @@ fn inner_enum_inspector(
 
               if field.is_text_content() {
                 return Some(quote!(
-                  let data_event = ::yaserde::__xml::writer::XmlEvent::characters(&self.#field_label);
+                  let data_event = ::yaserde::__xml::writer::XmlEvent::characters(&format!("{}", &self.#field_label));
                   writer.write(data_event).map_err(|e| e.to_string())?;
                 ));
               }
