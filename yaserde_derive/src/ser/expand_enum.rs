@@ -190,7 +190,7 @@ fn inner_enum_inspector(
                     _ => {}
                   }
                 }),
-                Field::FieldOption { .. } => None,
+                Field::FieldBox { .. } | Field::FieldOption { .. } => None,
               }
             })
             .collect();
@@ -256,6 +256,14 @@ fn inner_enum_inspector(
               };
 
               match field.get_type() {
+                Field::FieldBox { data_type } => {
+                  let write = write_sub_type(*data_type);
+
+                  match_field(&quote! {
+                    let item = Box::as_ref(item);
+                    #write
+                  })
+                }
                 Field::FieldOption { data_type } => {
                   let write = write_sub_type(*data_type);
 

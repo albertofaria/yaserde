@@ -195,6 +195,7 @@ pub enum Field {
   FieldU64,
   FieldF32,
   FieldF64,
+  FieldBox { data_type: Box<Field> },
   FieldOption { data_type: Box<Field> },
   FieldVec { data_type: Box<Field> },
   FieldStruct { struct_name: syn::Path },
@@ -222,6 +223,9 @@ impl From<&syn::Path> for Field {
         "u64" => Some(Field::FieldU64),
         "f32" => Some(Field::FieldF32),
         "f64" => Some(Field::FieldF64),
+        "Box" => Some(Field::FieldBox {
+          data_type: Box::new(Field::from(segment)),
+        }),
         "Option" => Some(Field::FieldOption {
           data_type: Box::new(Field::from(segment)),
         }),

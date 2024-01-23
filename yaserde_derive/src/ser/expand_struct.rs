@@ -41,6 +41,63 @@ pub fn serialize(
               struct_start_event.attr(#label_name, &yaserde_inner)
             }),
           ),
+          Field::FieldBox { data_type } => match *data_type {
+            Field::FieldString => field.ser_wrap_default_attribute(
+              None,
+              quote!({
+                let value = Box::as_ref(&self.#label);
+                struct_start_event.attr(#label_name, value)
+              }),
+            ),
+            Field::FieldBool
+            | Field::FieldI8
+            | Field::FieldU8
+            | Field::FieldI16
+            | Field::FieldU16
+            | Field::FieldI32
+            | Field::FieldU32
+            | Field::FieldI64
+            | Field::FieldU64
+            | Field::FieldF32
+            | Field::FieldF64 => field.ser_wrap_default_attribute(
+              Some(
+                quote!(self.#label.map_or_else(|| ::std::string::String::new(), |v| v.to_string())),
+              ),
+              quote!({
+                let value = Box::as_ref(&self.#label);
+                struct_start_event.attr(#label_name, &yaserde_inner)
+              }),
+            ),
+            Field::FieldVec { .. } => {
+              let item_ident = Ident::new("yaserde_item", field.get_span());
+              let inner = enclose_formatted_characters(&item_ident, label_name);
+
+              field.ser_wrap_default_attribute(
+                None,
+                quote!({
+                  let yaserde_list = Box::as_ref(&self.#label);
+                  for yaserde_item in yaserde_list.iter() {
+                    #inner
+                  }
+                }),
+              )
+            }
+            Field::FieldStruct { .. } => field.ser_wrap_default_attribute(
+              Some(quote! {
+              self.#label
+                .as_ref()
+                .map_or_else(
+                  || ::std::result::Result::Ok(::std::string::String::new()),
+                  |v| ::yaserde::ser::to_string_content(v),
+                )?
+              }),
+              quote!({
+                let yaserde_struct = Box::as_ref(&self.#label);
+                struct_start_event.attr(#label_name, &yaserde_inner)
+              }),
+            ),
+            Field::FieldBox { .. } | Field::FieldOption { .. } => unimplemented!(),
+          },
           Field::FieldOption { data_type } => match *data_type {
             Field::FieldString => field.ser_wrap_default_attribute(
               None,
@@ -106,7 +163,7 @@ pub fn serialize(
                 }
               }),
             ),
-            Field::FieldOption { .. } => unimplemented!(),
+            Field::FieldBox { .. } | Field::FieldOption { .. } => unimplemented!(),
           },
           Field::FieldStruct { .. } => field.ser_wrap_default_attribute(
             Some(quote! { ::yaserde::ser::to_string_content(&self.#label)? }),
@@ -146,6 +203,11 @@ pub fn serialize(
       let label = field.label();
       if field.is_text_content() {
         return match field.get_type() {
+          Field::FieldBox { .. } => Some(quote!(
+            let s = Deref::deref(Box::as_ref(&self.#label));
+            let data_event = ::yaserde::__xml::writer::XmlEvent::characters(s);
+            writer.write(data_event).map_err(|e| e.to_string())?;
+          )),
           Field::FieldOption { .. } => Some(quote!(
             let s = self.#label.as_deref().unwrap_or_default();
             let data_event = ::yaserde::__xml::writer::XmlEvent::characters(s);
@@ -175,6 +237,63 @@ pub fn serialize(
         | Field::FieldF32
         | Field::FieldF64 => serialize_element(&label, label_name, &conditions),
 
+        Field::FieldBox { data_type } => match *data_type {
+          Field::FieldString
+          | Field::FieldBool
+          | Field::FieldI8
+          | Field::FieldU8
+          | Field::FieldI16
+          | Field::FieldU16
+          | Field::FieldI32
+          | Field::FieldU32
+          | Field::FieldI64
+          | Field::FieldU64
+          | Field::FieldF32
+          | Field::FieldF64 => {
+            let item_ident = Ident::new("yaserde_item", field.get_span());
+            let inner = enclose_formatted_characters_for_value(&item_ident, label_name);
+
+            Some(quote! {
+              #conditions {
+                let yaserde_item = Box::as_ref(&self.#label);
+                #inner
+              }
+            })
+          }
+          Field::FieldVec { .. } => {
+            let item_ident = Ident::new("yaserde_item", field.get_span());
+            let inner = enclose_formatted_characters_for_value(&item_ident, label_name);
+
+            Some(quote! {
+              #conditions {
+                let yaserde_items = Box::as_ref(&self.#label);
+                for yaserde_item in yaserde_items.iter() {
+                  #inner
+                }
+              }
+            })
+          }
+          Field::FieldStruct { .. } => Some(if field.is_flatten() {
+            quote! {
+              #conditions {
+                let item = Box::as_ref(&self.#label);
+                writer.set_start_event_name(::std::option::Option::None);
+                writer.set_skip_start_end(true);
+                ::yaserde::YaSerialize::serialize(item, writer)?;
+              }
+            }
+          } else {
+            quote! {
+              #conditions {
+                let item = Box::as_ref(&self.#label);
+                writer.set_start_event_name(::std::option::Option::Some(#label_name.to_string()));
+                writer.set_skip_start_end(false);
+                ::yaserde::YaSerialize::serialize(item, writer)?;
+              }
+            }
+          }),
+          _ => unimplemented!(),
+        },
         Field::FieldOption { data_type } => match *data_type {
           Field::FieldString
           | Field::FieldBool
@@ -195,6 +314,17 @@ pub fn serialize(
               #conditions {
                 if let Some(ref yaserde_item) = self.#label {
                   #inner
+                }
+              }
+            })
+          }
+          Field::FieldBox { .. } => {
+            Some(quote! {
+              #conditions {
+                if let ::std::option::Option::Some(ref item) = &self.#label {
+                  writer.set_start_event_name(::std::option::Option::None);
+                  writer.set_skip_start_end(true);
+                  ::yaserde::YaSerialize::serialize(Box::as_ref(item), writer)?;
                 }
               }
             })
@@ -289,6 +419,16 @@ pub fn serialize(
               }
             })
           }
+          Field::FieldBox { .. } => Some(quote! {
+            #conditions {
+              for item in &self.#label {
+                let value = Box::as_ref(item);
+                writer.set_start_event_name(None);
+                writer.set_skip_start_end(false);
+                ::yaserde::YaSerialize::serialize(value, writer)?;
+              }
+            }
+          }),
           Field::FieldOption { .. } => Some(quote! {
             #conditions {
               for item in &self.#label {

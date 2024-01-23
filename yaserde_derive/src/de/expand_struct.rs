@@ -29,6 +29,25 @@ pub fn parse(
         Some(quote!(#struct_name)),
         quote!(<#struct_name as ::std::default::Default>::default()),
       ),
+      Field::FieldBox { data_type } => match *data_type {
+        Field::FieldStruct { ref struct_name } => build_default_value(
+          &field,
+          Some(quote!(::std::boxed::Box<#struct_name>)),
+          quote!(<#struct_name as ::std::default::Default>::default()),
+        ),
+        Field::FieldBox { .. } | Field::FieldOption { .. } | Field::FieldVec { .. } => {
+          unimplemented!("Box, Option or Vec nested in  Box<>");
+        }
+        simple_type => {
+          let type_token: TokenStream = simple_type.into();
+
+          build_default_value(
+            &field,
+            Some(quote!(::std::boxed::Box<#type_token>)),
+            quote!(<#type_token as ::std::default::Default>::default()),
+          )
+        }
+      },
       Field::FieldOption { .. } => {
         build_default_value(&field, None, quote!(::std::option::Option::None))
       }
@@ -38,8 +57,8 @@ pub fn parse(
           Some(quote!(::std::vec::Vec<#struct_name>)),
           quote!(::std::vec![]),
         ),
-        Field::FieldOption { .. } | Field::FieldVec { .. } => {
-          unimplemented!("Option or Vec nested in  Vec<>");
+        Field::FieldBox { .. } | Field::FieldOption { .. } | Field::FieldVec { .. } => {
+          unimplemented!("Box, Option or Vec nested in  Vec<>");
         }
         simple_type => {
           let type_token: TokenStream = simple_type.into();
@@ -124,14 +143,24 @@ pub fn parse(
 
       match field.get_type() {
         Field::FieldStruct { struct_name } => struct_visitor(struct_name),
+        Field::FieldBox { data_type } => match *data_type {
+          Field::FieldStruct { struct_name } => struct_visitor(struct_name),
+          Field::FieldBox { .. } | Field::FieldOption { .. } | Field::FieldVec { .. } => None,
+          simple_type => simple_type_visitor(simple_type),
+        },
         Field::FieldOption { data_type } => match *data_type {
           Field::FieldStruct { struct_name } => struct_visitor(struct_name),
+          Field::FieldBox { data_type } => match *data_type {
+            Field::FieldStruct { struct_name } => struct_visitor(struct_name),
+            Field::FieldBox { .. } | Field::FieldOption { .. } | Field::FieldVec { .. } => None,
+            simple_type => simple_type_visitor(simple_type),
+          },
           Field::FieldOption { .. } | Field::FieldVec { .. } => None,
           simple_type => simple_type_visitor(simple_type),
         },
         Field::FieldVec { data_type } => match *data_type {
           Field::FieldStruct { struct_name } => struct_visitor(struct_name),
-          Field::FieldOption { .. } | Field::FieldVec { .. } => None,
+          Field::FieldBox { .. } | Field::FieldOption { .. } | Field::FieldVec { .. } => None,
           simple_type => simple_type_visitor(simple_type),
         },
         simple_type => simple_type_visitor(simple_type),
@@ -179,16 +208,28 @@ pub fn parse(
       };
 
       let visit_sub = |sub_type: Box<Field>, action: TokenStream| match *sub_type {
-        Field::FieldOption { .. } | Field::FieldVec { .. } => unimplemented!(),
+        Field::FieldBox { .. } | Field::FieldOption { .. } | Field::FieldVec { .. } => {
+          unimplemented!()
+        }
         Field::FieldStruct { struct_name } => visit_struct(struct_name, action),
         simple_type => visit_simple(simple_type, action),
       };
 
       match field.get_type() {
         Field::FieldStruct { struct_name } => visit_struct(struct_name, quote! { = value }),
-        Field::FieldOption { data_type } => {
-          visit_sub(data_type, quote! { = ::std::option::Option::Some(value) })
+        Field::FieldBox { data_type } => {
+          visit_sub(data_type, quote! { = ::std::boxed::Box::new(value) })
         }
+        Field::FieldOption { data_type } => match *data_type {
+          Field::FieldBox { data_type } => visit_sub(
+            data_type,
+            quote! { = ::std::option::Option::Some(::std::boxed::Box::new(value)) },
+          ),
+          data_type => visit_sub(
+            Box::new(data_type),
+            quote! { = ::std::option::Option::Some(value) },
+          ),
+        },
         Field::FieldVec { data_type } => visit_sub(data_type, quote! { .push(value) }),
         simple_type => visit_simple(simple_type, quote! { = value }),
       }
@@ -207,7 +248,7 @@ pub fn parse(
         Field::FieldStruct { .. } => quote! {
           #value_label = ::yaserde::de::from_str(&unused_xml_elements)?;
         },
-        Field::FieldOption { data_type } => match *data_type {
+        Field::FieldBox { data_type } | Field::FieldOption { data_type } => match *data_type {
           Field::FieldStruct { .. } => quote! {
             #value_label = ::yaserde::de::from_str(&unused_xml_elements).ok();
           },
@@ -281,13 +322,18 @@ pub fn parse(
       };
 
       let visit_sub = |sub_type: Box<Field>, action: TokenStream| match *sub_type {
-        Field::FieldOption { .. } | Field::FieldVec { .. } => unimplemented!(),
+        Field::FieldBox { .. } | Field::FieldOption { .. } | Field::FieldVec { .. } => {
+          unimplemented!()
+        }
         Field::FieldStruct { struct_name } => visit_struct(struct_name, action),
         simple_type => visit_simple(simple_type, action),
       };
 
       match field.get_type() {
         Field::FieldString => visit_string(),
+        Field::FieldBox { data_type } => {
+          visit_sub(data_type, quote! { = ::std::boxed::Box::new(value) })
+        }
         Field::FieldOption { data_type } => {
           visit_sub(data_type, quote! { = ::std::option::Option::Some(value) })
         }
@@ -297,7 +343,9 @@ pub fn parse(
             &Ident::new("visit_str", field.get_span()),
             &field.get_visitor_ident(Some(struct_name)),
           ),
-          Field::FieldOption { .. } | Field::FieldVec { .. } => unimplemented!("Not supported"),
+          Field::FieldBox { .. } | Field::FieldOption { .. } | Field::FieldVec { .. } => {
+            unimplemented!("Not supported")
+          }
           simple_type => visit_vec(
             &quote! { .push(value) },
             &simple_type.get_simple_type_visitor(),
@@ -327,6 +375,12 @@ pub fn parse(
 
       match field.get_type() {
         Field::FieldString => set_text(&quote! { text_content.to_owned() }),
+        Field::FieldBox { data_type } => match *data_type {
+          Field::FieldString => {
+            set_text(&quote! { ::std::boxed::Box::new(text_content.to_owned()) })
+          }
+          _ => None,
+        },
         Field::FieldOption { data_type } => match *data_type {
           Field::FieldString => set_text(
             &quote! { if text_content.is_empty() { None } else { Some(text_content.to_owned()) }},
