@@ -19,7 +19,7 @@ pub fn build_default_value(
     .unwrap_or_default();
 
   Some(quote! {
-    #[allow(unused_mut)]
+    #[allow(unused_mut, non_snake_case)]
     let mut #label #field_type = #default_value;
   })
 }
